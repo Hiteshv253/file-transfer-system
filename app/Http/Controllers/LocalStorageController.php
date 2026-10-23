@@ -57,6 +57,7 @@ class LocalStorageController
         $breadcrumbs = collect();
         for ($folder = $currentFolder; $folder; $folder = $folder->parent_id ? StoredFolder::find($folder->parent_id) : null) $breadcrumbs->prepend($folder);
         $folderQuery = StoredFolder::accessibleTo($user)->with('owner');
+        if ($request->filled('date')) $folderQuery->forUploadDate($user, $request->date);
         if ($request->filled('q')) {
             $folderQuery->where('name', 'like', '%'.$request->q.'%');
             if ($currentFolder) $folderQuery->where('tree_path', 'like', $currentFolder->tree_path.'%')->where('id', '!=', $currentFolder->id);

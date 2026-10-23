@@ -125,6 +125,16 @@ try {
     $nested = $controller->index(asUser($owner,['folder'=>$folderDocA->folder_id]))->getData();
     check(collect($nested['files']->items())->pluck('id')->contains($folderDocA->id) && !collect($nested['files']->items())->pluck('id')->contains($folderDocB->id), 'Folder browsing shows only files in the selected folder');
     check($nested['breadcrumbs']->pluck('name')->all() === ['مشاريع','Client A','reports'], 'Folder breadcrumb preserves original names and hierarchy');
+    $uploadDay = $folderDocA->folder_date;
+    $folderDocB->update(['folder_date'=>'2001-01-02']);
+    $dayRoot = $controller->index(asUser($owner,['date'=>$uploadDay]))->getData();
+    check($dayRoot['folders']->pluck('id')->contains($folderRoot->id), 'Date listing retains ancestors of nested files uploaded that day');
+    $clientFolder = StoredFolder::findOrFail($folderDocA->folder_id)->parent_id;
+    $dayChildren = $controller->index(asUser($owner,['date'=>$uploadDay,'folder'=>$clientFolder]))->getData();
+    check($dayChildren['folders']->pluck('id')->contains($folderDocA->folder_id) && !$dayChildren['folders']->pluck('id')->contains($folderDocB->folder_id), 'Date listing excludes sibling folders whose files belong to another day');
+    $oldDay = $controller->index(asUser($owner,['date'=>'2001-01-02','folder'=>$clientFolder]))->getData();
+    check($oldDay['folders']->pluck('id')->contains($folderDocB->folder_id) && !$oldDay['folders']->pluck('id')->contains($folderDocA->folder_id), 'Each date exposes its original folder structure independently');
+    $folderDocB->update(['folder_date'=>$uploadDay]);
     check(StoredFolder::accessibleTo($shared)->whereKey($folderRoot->id)->exists() && StoredFolder::accessibleTo($shared)->whereKey($folderDocA->folder_id)->exists(), 'Shared file recipients can navigate its ancestor folders');
     check(!StoredFolder::accessibleTo($other)->whereKey($folderRoot->id)->exists(), 'Unrelated users cannot browse private folders');
     denied(fn()=>$controller->createFolder(asUser($shared,['parent_id'=>$folderRoot->id,'name'=>'Forbidden'])),403,'Shared folder visibility does not grant write access');

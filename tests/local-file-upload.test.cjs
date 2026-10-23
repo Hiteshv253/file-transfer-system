@@ -123,6 +123,29 @@ test('dragging an empty directory preserves its name and empty child directories
     assert.ok(get('upload-feedback').textContent.includes('2 folders created.'));
 });
 
+test('one mixed drop preserves loose files, multiple folder names and nested paths', async () => {
+    const calls=[];
+    const {get,requests}=setup({fetch:async(url,options)=>{calls.push(JSON.parse(options.body));return {ok:true};}});
+    const entry=name=>({name,isFile:true,file:done=>done(file(name))});
+    const directory=(name,children)=>({name,isDirectory:true,createReader:()=>{
+        let read=false;return {readEntries:done=>{done(read?[]:children);read=true;}};
+    }});
+    const entries=[entry('loose.pdf'),directory('Digram',[entry('photo.png'),directory('Nested',[entry('report.txt')])]),directory('Update CV',[entry('cv.pdf')])];
+    await get('file-dropzone').emit('drop',{dataTransfer:{items:entries.map(e=>({webkitGetAsEntry:()=>e})),files:[]}});
+    assert.equal(get('upload-queue').children.length,4);
+    const finished=get('upload-form').emit('submit');
+    await flush();
+    assert.deepEqual(calls[0].paths,['Digram','Digram/Nested','Update CV']);
+    for(let i=0;i<4;i++) {
+        assert.ok(requests[i]);
+        await requests[i].finish(201,{document:{id:i+1,folder_date:'2026-10-23'}});
+        await flush();
+    }
+    await finished;
+    const paths=requests.map(r=>r.body.values.find(([name])=>name==='relative_path')?.[1] || '').sort();
+    assert.deepEqual(paths,['Digram/Nested/report.txt','Digram/photo.png','Update CV/cv.pdf','loose.pdf']);
+});
+
 test('restoring a nested upload retains its original target folder and receipt key', async () => {
     const key='11111111-1111-4111-8111-111111111111';
     const {get,requests}=setup({saved:[{...file('report.txt'),key,relativePath:'Project/Sub/report.txt',parentFolderId:7,state:'uploading'}],fetch:async()=>({ok:true,json:async()=>({documents:[]})})});
