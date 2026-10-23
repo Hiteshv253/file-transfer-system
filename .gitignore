@@ -36,3 +36,7 @@ Homestead.json
 Homestead.yaml
 .env
 data.ms
+.env.docker
+.env.docker.*
+.filevault*
+/docker-backups

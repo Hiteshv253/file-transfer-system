@@ -8,4 +8,5 @@ return Application::create(
     providers: [
         //
     ],
+    middleware: [\App\Http\Middleware\LocalFilePortal::class],
 );

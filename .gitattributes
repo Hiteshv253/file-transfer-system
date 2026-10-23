@@ -1,4 +1,8 @@
 * text=auto
+*.sh text eol=lf
+Dockerfile text eol=lf
+docker/*.conf text eol=lf
+docker/*.ini text eol=lf
 *.css linguist-vendored
 *.scss linguist-vendored
 *.js linguist-vendored

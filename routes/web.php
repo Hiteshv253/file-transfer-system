@@ -8,6 +8,26 @@ use Common\Core\Controllers\HomeController;
 use Common\Pages\CustomPageController;
 use Illuminate\Support\Facades\Route;
 
+Route::get('files/login', [\App\Http\Controllers\LocalStorageController::class, 'loginPage']);
+Route::get('files/health', function () {
+    \Illuminate\Support\Facades\DB::select('SELECT 1');
+    abort_unless(is_dir(config('local-storage.root')) && is_writable(config('local-storage.root')), 503);
+    return response()->json(['status' => 'ok']);
+});
+Route::post('files/login', [\App\Http\Controllers\LocalStorageController::class, 'login'])->middleware('throttle:5,1');
+Route::group(['prefix' => 'files', 'middleware' => [\App\Http\Middleware\RequirePortalLogin::class, \App\Http\Middleware\ProtectStorageSnapshot::class]], function () {
+    $controller = \App\Http\Controllers\LocalStorageController::class;
+    Route::get('/', [$controller, 'index']);
+    Route::post('logout', [$controller, 'logout']);
+    Route::post('upload', [$controller, 'upload']);
+    Route::post('upload-status', [$controller, 'uploadStatus']);
+    Route::get('inventory', [$controller, 'inventory']);
+    Route::get('{id}/download', [$controller, 'download'])->whereNumber('id');
+    Route::post('{id}/request-deletion', [$controller, 'requestDeletion'])->whereNumber('id');
+    Route::post('requests/{id}/review', [$controller, 'review'])->whereNumber('id');
+    Route::post('users', [$controller, 'createUser']);
+});
+
 Route::get('test', function () {
     $entry = FileEntry::find(118);
     return $entry
