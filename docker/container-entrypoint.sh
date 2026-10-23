@@ -5,8 +5,8 @@ umask 0027
 : "${APP_KEY:?APP_KEY must be retained across deployments}"
 : "${DEPLOYMENT_ID:?Missing deployment identity}"
 
-mkdir -p storage/app/locks storage/app/server-storage storage/framework/{sessions,views,cache/data} storage/logs bootstrap/cache
-chown www-data:www-data storage storage/app storage/app/locks storage/app/server-storage storage/framework storage/framework/{sessions,views,cache,cache/data} storage/logs bootstrap/cache
+mkdir -p storage/app/locks storage/app/server-storage storage/app/editable-views storage/framework/{sessions,views,cache/data} storage/logs bootstrap/cache
+chown www-data:www-data storage storage/app storage/app/locks storage/app/server-storage storage/app/editable-views storage/framework storage/framework/{sessions,views,cache,cache/data} storage/logs bootstrap/cache
 touch storage/app/locks/storage-backup.lock
 chown www-data:www-data storage/app/locks/storage-backup.lock
 chmod 0660 storage/app/locks/storage-backup.lock
