@@ -8,6 +8,8 @@ use Common\Core\Controllers\HomeController;
 use Common\Pages\CustomPageController;
 use Illuminate\Support\Facades\Route;
 
+Route::get('favicon.ico', fn() => redirect('/favicon.svg'));
+
 Route::middleware(\App\Http\Middleware\PortalLocale::class)->group(function () {
 Route::post('files/language', function (\Illuminate\Http\Request $request) {
     $data = $request->validate(['locale' => 'required|in:en,ar']);
@@ -26,6 +28,9 @@ Route::group(['prefix' => 'files', 'middleware' => [\App\Http\Middleware\Require
     Route::get('/', [$controller, 'index']);
     Route::post('logout', [$controller, 'logout']);
     Route::post('upload', [$controller, 'upload']);
+    Route::post('folders', [$controller, 'createFolder']);
+    Route::post('folders/tree', [$controller, 'createFolderTree']);
+    Route::post('folders/{id}/delete', [$controller, 'deleteFolder'])->whereNumber('id');
     Route::post('upload-status', [$controller, 'uploadStatus']);
     Route::get('inventory', [$controller, 'inventory']);
     Route::get('{id}/download', [$controller, 'download'])->whereNumber('id');
@@ -35,7 +40,10 @@ Route::group(['prefix' => 'files', 'middleware' => [\App\Http\Middleware\Require
     Route::post('requests/{id}/review', [$controller, 'review'])->whereNumber('id');
     Route::post('users', [$controller, 'createUser']);
     Route::post('users/{id}/permissions', [$controller, 'updateUser'])->whereNumber('id');
+    Route::post('users/{id}/password', [$controller, 'resetUserPassword'])->whereNumber('id');
     Route::post('users/{id}/delete', [$controller, 'deleteUser'])->whereNumber('id');
+    Route::post('bulk-delete', [$controller, 'bulkDelete']);
+    Route::post('requests/bulk-review', [$controller, 'bulkReview']);
 });
 
 });

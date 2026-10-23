@@ -39,13 +39,103 @@ function setup(options = {}) {
     vm.runInNewContext(fs.readFileSync('public/js/local-file-upload.js', 'utf8'), {
         document, window, XMLHttpRequest: XHR, fetch: options.fetch,
         setTimeout: callback => setImmediate(callback),
-        crypto: require('node:crypto').webcrypto,
+        crypto: options.crypto || require('node:crypto').webcrypto,
         FormData: class { constructor() { this.values = []; } append(...args) { this.values.push(args); } },
     });
     return {get, requests, saved};
 }
 const file = (name, size = 1024) => ({name, size, lastModified: 123});
 const flush = () => new Promise(resolve => setImmediate(resolve));
+
+test('HTTP IP deployments can select files without secure-context randomUUID', async () => {
+    const webcrypto = require('node:crypto').webcrypto;
+    const {get, requests} = setup({crypto: {getRandomValues: webcrypto.getRandomValues.bind(webcrypto)}});
+    get('file').files = [file('http-upload.txt')];
+    await get('file').emit('change');
+    assert.equal(get('upload-queue').children.length, 1);
+    const finished = get('upload-form').emit('submit');
+    const key = requests[0].body.values.find(([name]) => name === 'upload_key')[1];
+    assert.match(key, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+    await requests[0].finish(201, {document: {id: 1, folder_date: '2026-10-23'}});
+    await finished;
+    assert.ok(get('upload-feedback').textContent.includes('1 file(s) uploaded.'));
+});
+
+test('completed batch is replaced when selecting the next batch; background tray follows active upload', async () => {
+    const {get, requests, saved} = setup();
+    get('file').files = [file('first.txt')];
+    await get('file').emit('change');
+    const finished = get('upload-form').emit('submit');
+    assert.equal(get('background-upload').hidden, false);
+    await requests[0].finish(201, {document: {id: 1, folder_date: '2026-10-23'}});
+    await finished;
+    assert.equal(get('background-upload').hidden, true);
+    get('file').files = [file('second.txt')];
+    await get('file').emit('change');
+    assert.equal(get('upload-queue').children.length, 1, 'Completed rows must disappear from the next batch');
+    const batch = JSON.parse(saved.values().next().value);
+    assert.equal(batch.length, 1);
+    assert.equal(batch[0].name, 'second.txt');
+    assert.equal(batch[0].state, 'queued');
+    assert.equal(get('upload-feedback').textContent, 'Files selected. Click Upload files to start.');
+});
+
+test('folder picker preserves nested relative paths and captures the upload destination', async () => {
+    const trees = [];
+    const {get, requests, saved} = setup({fetch: async (url, options) => {
+        trees.push({url, body: JSON.parse(options.body)});return {ok:true};
+    }});
+    get('upload-form').dataset.folderId = '7';
+    get('folder-input').files = [
+        {...file('report.txt'), webkitRelativePath:'Invoices/January/report.txt'},
+        {...file('report.txt'), webkitRelativePath:'Invoices/February/report.txt'},
+    ];
+    await get('folder-input').emit('change');
+    assert.equal(get('upload-queue').children.length, 2);
+    get('upload-form').dataset.folderId = '99';
+    const finished = get('upload-form').emit('submit');await flush();
+    assert.equal(trees[0].url, '/files/folders/tree');
+    assert.equal(trees[0].body.parent_id, 7);
+    assert.deepEqual(trees[0].body.paths, ['Invoices', 'Invoices/January', 'Invoices/February']);
+    assert.equal(requests.length, 2);
+    for (const [index, request] of requests.entries()) {
+        assert.equal(request.body.values.find(([name])=>name==='parent_folder_id')[1], 7);
+        assert.match(request.body.values.find(([name])=>name==='relative_path')[1], /^Invoices\/(January|February)\/report.txt$/);
+        await request.finish(201, {document:{id:index+1,folder_date:'2026-10-23',folder_id:10+index}});
+    }
+    await finished;
+    const batch=JSON.parse(saved.values().next().value);
+    assert.equal(batch[0].relativePath, 'Invoices/January/report.txt');
+    assert.equal(batch[0].parentFolderId, 7);
+});
+
+test('dragging an empty directory preserves its name and empty child directories', async () => {
+    const calls=[];
+    const {get, requests}=setup({fetch:async(url,options)=>{calls.push(JSON.parse(options.body));return {ok:true};}});
+    const empty={name:'Empty child',isDirectory:true,createReader:()=>({readEntries:done=>done([])})};
+    let reads=0;
+    const root={name:'Project',isDirectory:true,createReader:()=>({readEntries:done=>done(reads++===0?[empty]:[])})};
+    await get('file-dropzone').emit('drop',{dataTransfer:{items:[{webkitGetAsEntry:()=>root}],files:[]}});
+    assert.equal(get('upload-submit').disabled,false);
+    await get('upload-form').emit('submit');
+    assert.equal(requests.length,0);
+    assert.deepEqual(calls[0].paths,['Project','Project/Empty child']);
+    assert.ok(get('upload-feedback').textContent.includes('2 folders created.'));
+});
+
+test('restoring a nested upload retains its original target folder and receipt key', async () => {
+    const key='11111111-1111-4111-8111-111111111111';
+    const {get,requests}=setup({saved:[{...file('report.txt'),key,relativePath:'Project/Sub/report.txt',parentFolderId:7,state:'uploading'}],fetch:async()=>({ok:true,json:async()=>({documents:[]})})});
+    await flush();
+    get('upload-form').dataset.folderId='99';
+    get('folder-input').files=[{...file('report.txt'),webkitRelativePath:'Project/Sub/report.txt'}];
+    await get('folder-input').emit('change');
+    assert.equal(get('upload-queue').children.length,1);
+    const finished=get('upload-form').emit('submit');
+    assert.equal(requests[0].body.values.find(([name])=>name==='upload_key')[1],key);
+    assert.equal(requests[0].body.values.find(([name])=>name==='parent_folder_id')[1],7);
+    await requests[0].finish(201,{document:{id:1,folder_date:'2026-10-23',folder_id:8}});await finished;
+});
 
 test('Arabic labels preserve upload states and receipts when changing languages', async () => {
     const translations = JSON.parse(fs.readFileSync('resources/lang/ar.json', 'utf8'));

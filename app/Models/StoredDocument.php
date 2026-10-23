@@ -13,6 +13,7 @@ class StoredDocument extends Model
     protected $guarded = ['id'];
 
     public function owner() { return $this->belongsTo(User::class, 'owner_id'); }
+    public function folder() { return $this->belongsTo(StoredFolder::class, 'folder_id'); }
 
     public function scopeAccessibleTo(Builder $query, User $user): Builder
     {

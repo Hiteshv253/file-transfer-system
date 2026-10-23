@@ -1,19 +1,22 @@
 <section class="card" id="upload-card">
-    <h2>{{ __('Upload files') }}</h2>
-    <form id="upload-form" action="/files/upload" method="post" enctype="multipart/form-data" data-user-id="{{ $user->id }}">
+    <div class="upload-card-heading"><div><h2>{{ __('Upload files') }}</h2><p class="muted upload-background-help">{{ __('Add files or drop a whole folder. Keep everything organized.') }}</p></div>
+    <p class="upload-destination muted">@include('local-storage.icon', ['name' => 'folder'])<span>{{ __('Upload destination') }}<strong id="upload-destination">{{ $currentFolder?->name ?? __('All files') }}</strong></span></p></div>
+    <form id="upload-form" action="/files/upload" method="post" enctype="multipart/form-data" data-user-id="{{ $user->id }}" data-folder-id="{{ $currentFolder?->id ?? 0 }}">
         @csrf
-        <div class="split">
+        <div class="split upload-workspace">
             <div>
-                <div id="file-dropzone" class="upload file-dropzone" role="button" tabindex="0" aria-controls="file" aria-label="{{ __('Choose files or drag and drop files here') }}">
-                    <span class="upload-symbol" aria-hidden="true">↑</span>
-                    <strong>{{ __('Drag & drop files here') }}</strong>
-                    <span class="muted">{{ __('or') }} <span class="browse-files">{{ __('browse files') }}</span></span>
+                <div id="file-dropzone" class="upload file-dropzone" role="button" tabindex="0" aria-controls="file" aria-label="{{ __('Browse files or drop files and folders here') }}">
+                    <span class="upload-symbol" aria-hidden="true">@include('local-storage.icon', ['name' => 'upload'])</span>
+                    <strong>{{ __('Drop files or folders here') }}</strong>
                     <small class="muted">{{ __('PDF, images, audio, video & all other file types') }}</small>
+                    <span class="browse-files">{{ __('Browse files') }} <span aria-hidden="true">+</span></span>
                 </div>
                 <input id="file" type="file" multiple hidden>
-                <p class="muted"><small>{{ __('Up to 100 MB per file. Select multiple files together.') }}<br>{{ __('Saved in') }} {{ now(config('local-storage.timezone'))->format('Y / m / Y-m-d') }}.</small></p>
+                <input id="folder-input" type="file" multiple webkitdirectory directory hidden>
+                <p id="upload-folder-summary" class="muted" aria-live="polite"></p>
+                <p class="muted upload-limit"><small>{{ __('Up to 100 MB per file. Select multiple files together.') }}</small></p>
             </div>
-            <div>
+            <div class="upload-sharing">
                 <fieldset id="share_with" class="share-users">
                     <legend>{{ __('Share with users') }} <small class="muted">{{ __('(optional)') }}</small></legend>
                     <div class="share-options">
@@ -25,6 +28,7 @@
                 <small class="muted">{{ __('Tap users to select them. Applies to all files in this upload.') }}</small>
             </div>
         </div>
+        <p class="upload-background-note muted"><span class="secure-dot" aria-hidden="true"></span>{{ __('Uploads continue while you browse this website. Keep this browser tab open.') }}</p>
         <details id="upload-list-details" class="upload-list-details" hidden><summary id="upload-list-title">{{ __('Selected files') }}</summary><div id="upload-queue" class="upload-queue" aria-label="{{ __('Selected files') }}"></div></details>
         <div id="upload-overall" hidden>
             <div class="upload-summary"><strong id="upload-summary">{{ __('Ready to upload') }}</strong><span id="upload-percentage">0%</span></div>

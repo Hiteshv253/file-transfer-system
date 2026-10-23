@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\StoredDocument;
+use App\Models\StoredFolder;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -35,6 +36,7 @@ class LocalStorageController
             return back()->withErrors(['email' => __('This account is disabled.')]);
         }
         $request->session()->regenerate();
+        $request->session()->put('portal_session_version', (int) Auth::user()->portal_session_version);
         return redirect('/files');
     }
 
@@ -51,6 +53,15 @@ class LocalStorageController
         $this->validateFilters($request);
         $user = $request->user();
         $admin = $user->hasPermission('admin');
+        $currentFolder = $request->filled('folder') ? StoredFolder::accessibleTo($user)->findOrFail($request->integer('folder')) : null;
+        $breadcrumbs = collect();
+        for ($folder = $currentFolder; $folder; $folder = $folder->parent_id ? StoredFolder::find($folder->parent_id) : null) $breadcrumbs->prepend($folder);
+        $folderQuery = StoredFolder::accessibleTo($user)->with('owner');
+        if ($request->filled('q')) {
+            $folderQuery->where('name', 'like', '%'.$request->q.'%');
+            if ($currentFolder) $folderQuery->where('tree_path', 'like', $currentFolder->tree_path.'%')->where('id', '!=', $currentFolder->id);
+        } else $folderQuery->where('parent_id', $currentFolder?->id ?? 0);
+        $folders = $folderQuery->orderBy('name')->paginate(60, ['*'], 'folders_page')->withQueryString();
         $activeTab = $request->input('tab', $request->filled('requests_page') ? 'requests' : 'files');
         $tabs = ['files', 'requests'];
         if ($user->portalCan('upload')) $tabs[] = 'upload';
@@ -61,7 +72,7 @@ class LocalStorageController
         $snapshot = $request->filled('snapshot') ? (int) $request->snapshot : (int) (clone $base)->max('id');
         $filtered = $this->filteredDocuments($request)->where('id', '<=', $snapshot);
         $matchingFiles = (clone $filtered)->count();
-        $files = (clone $filtered)->with('owner')->orderByDesc('id')
+        $files = (clone $filtered)->with(['owner', 'folder'])->orderByDesc('id')
             ->cursorPaginate((int) ($request->input('per_page') ?: 50), ['*'], 'cursor', Cursor::fromEncoded($request->input('cursor')))
             ->appends(array_merge($request->except(['cursor', 'requests_page', 'snapshot', 'tab']), ['snapshot' => $snapshot, 'tab' => 'files']));
         $availability = [];
@@ -75,7 +86,7 @@ class LocalStorageController
             ->when(!$admin, fn($q) => $q->where('r.requested_by', $user->id))
             ->select('r.*', 'd.name as file_name', 'u.name as requester')->orderByDesc('r.id')->paginate(20, ['*'], 'requests_page');
         $pending = DB::table('document_deletion_requests')->whereIn('document_id', collect($files->items())->pluck('id'))->where('status', 'pending')->pluck('document_id')->all();
-        return view('local-storage.index', compact('user', 'admin', 'files', 'dates', 'requests', 'pending', 'matchingFiles', 'snapshot', 'dailyCounts', 'summaryDate', 'availability', 'activeTab') + [
+        return view('local-storage.index', compact('user', 'admin', 'files', 'dates', 'requests', 'pending', 'matchingFiles', 'snapshot', 'dailyCounts', 'summaryDate', 'availability', 'activeTab', 'folders', 'currentFolder', 'breadcrumbs') + [
             'users' => User::whereNull('portal_deleted_at')->orderBy('name')->get(),
             'totalFiles' => (clone $base)->count(),
             'totalBytes' => (clone $base)->sum('size'),
@@ -89,6 +100,7 @@ class LocalStorageController
             'date' => 'nullable|date_format:Y-m-d', 'q' => 'nullable|string|max:200',
             'owner' => 'nullable|integer|exists:users,id', 'type' => 'nullable|in:pdf,image,audio,video,other',
             'per_page' => 'nullable|in:50,100,200', 'snapshot' => 'nullable|integer|min:0', 'cursor' => 'nullable|string|max:500',
+            'folder' => 'nullable|integer|min:1', 'folders_page' => 'nullable|integer|min:1',
         ]);
     }
 
@@ -97,6 +109,11 @@ class LocalStorageController
         $query = StoredDocument::accessibleTo($request->user())
             ->when($request->date, fn($q) => $q->where('folder_date', $request->date))
             ->when($request->q, fn($q) => $q->where('name', 'like', '%'.$request->q.'%'));
+        $folder = $request->filled('folder') ? StoredFolder::accessibleTo($request->user())->findOrFail($request->integer('folder')) : null;
+        if ($request->filled('q')) {
+            if ($folder) $query->whereIn('folder_id', StoredFolder::where('tree_path', 'like', $folder->tree_path.'%')->select('id'));
+        } elseif ($folder) $query->where('folder_id', $folder->id);
+        else $query->whereNull('folder_id');
         if ($request->user()->hasPermission('admin') && $request->filled('owner')) $query->where('owner_id', $request->owner);
         if ($request->type === 'pdf') $query->where('mime', 'application/pdf');
         elseif (in_array($request->type, ['image', 'audio', 'video'])) $query->where('mime', 'like', $request->type.'/%');
@@ -128,9 +145,9 @@ class LocalStorageController
         abort_unless($request->user()->portalCan('upload'), 403);
         $data = $request->validate(['keys' => 'required|array|max:1000', 'keys.*' => 'required|uuid']);
         $documents = StoredDocument::withTrashed()->where('owner_id', $request->user()->id)->whereIn('upload_key', $data['keys'])
-            ->get(['id', 'upload_key', 'folder_date', 'deleted_at', 'path', 'size']);
+            ->get(['id', 'upload_key', 'folder_date', 'deleted_at', 'path', 'size', 'folder_id']);
         return response()->json(['documents' => $documents->map(fn($doc) => [
-            'id' => $doc->id, 'upload_key' => $doc->upload_key, 'folder_date' => $doc->folder_date, 'deleted' => (bool) $doc->deleted_at,
+            'id' => $doc->id, 'upload_key' => $doc->upload_key, 'folder_date' => $doc->folder_date, 'folder_id' => $doc->folder_id, 'deleted' => (bool) $doc->deleted_at,
             'available' => !$doc->deleted_at && $this->disk()->exists($doc->path) && $this->disk()->size($doc->path) === (int) $doc->size,
         ])]);
     }
@@ -138,15 +155,19 @@ class LocalStorageController
     public function upload(Request $request)
     {
         abort_unless($request->user()->portalCan('upload'), 403);
-        $request->validate(['file' => 'required|file|max:102400', 'upload_key' => 'nullable|uuid', 'share_with' => 'nullable|array', 'share_with.*' => 'integer|exists:users,id']);
+        $request->validate(['file' => 'required|file|max:102400', 'upload_key' => 'nullable|uuid', 'share_with' => 'nullable|array', 'share_with.*' => 'integer|exists:users,id',
+            'parent_folder_id' => 'nullable|integer|min:0', 'relative_path' => 'nullable|string|max:2048']);
         $file = $request->file('file');
+        $relativePath = $request->input('relative_path', '') ?: '';
+        $segments = $relativePath !== '' ? $this->folderSegments($relativePath, true) : [];
+        if ($segments) abort_unless(array_pop($segments) === $file->getClientOriginalName(), 422, __('Invalid folder path.'));
         $date = now(config('local-storage.timezone'));
         $folder = $date->format('Y/m/Y-m-d');
         $path = $folder.'/'.Str::uuid();
         $hash = hash_file('sha256', $file->getRealPath());
         $written = false;
         try {
-            $document = DB::transaction(function () use ($request, $file, $date, $path, $hash, &$written) {
+            $document = DB::transaction(function () use ($request, $file, $date, $path, $hash, $segments, $relativePath, &$written) {
                 // Serialize commits for the same owner, including retries whose first
                 // response was lost. A unique index also enforces one receipt per key.
                 User::whereKey($request->user()->id)->lockForUpdate()->firstOrFail();
@@ -155,11 +176,13 @@ class LocalStorageController
                     if ($existing) {
                         abort_if($existing->trashed(), 409, __('This upload was already deleted with approval.'));
                         abort_unless($existing->sha256 === $hash && (int) $existing->size === $file->getSize(), 409, __('Upload reference belongs to a different file.'));
+                        abort_unless(($existing->relative_path ?: '') === $relativePath && (int) $existing->upload_parent_id === $request->integer('parent_folder_id'), 409, __('Upload reference belongs to a different folder.'));
                         abort_unless($this->disk()->exists($existing->path), 409, __('Previously uploaded file is missing on disk. Contact the super admin.'));
                         abort_unless($this->disk()->size($existing->path) === (int) $existing->size && hash_file('sha256', $this->disk()->path($existing->path)) === $existing->sha256, 409, __('Previously uploaded file failed integrity verification. Contact the super admin.'));
                         return $existing;
                     }
                 }
+                $targetFolder = $this->ensureFolders($request->user(), $request->integer('parent_folder_id'), $segments);
                 $stream = fopen($file->getRealPath(), 'rb');
                 $written = true;
                 try { $this->disk()->put($path, $stream); } finally { if (is_resource($stream)) fclose($stream); }
@@ -174,7 +197,8 @@ class LocalStorageController
                     'name' => basename(str_replace('\\', '/', $file->getClientOriginalName())),
                     'path' => $path, 'mime' => $file->getMimeType() ?: 'application/octet-stream',
                     'size' => $file->getSize(), 'folder_date' => $date->format('Y-m-d'),
-                    'upload_key' => $request->input('upload_key'), 'sha256' => $hash]);
+                    'upload_key' => $request->input('upload_key'), 'sha256' => $hash, 'folder_id' => $targetFolder?->id,
+                    'upload_parent_id' => $request->integer('parent_folder_id') ?: null, 'relative_path' => $relativePath ?: null]);
                 foreach (User::whereNull('portal_deleted_at')->whereIn('id', array_unique($request->input('share_with', [])))->pluck('id') as $id) {
                     DB::table('stored_document_shares')->insert(['document_id' => $document->id, 'user_id' => $id]);
                 }
@@ -184,7 +208,7 @@ class LocalStorageController
         if ($request->expectsJson()) {
             return response()->json(['message' => __('File uploaded.'), 'document' => [
                 'id' => $document->id, 'name' => $document->name, 'size' => $document->size,
-                'folder_date' => $document->folder_date,
+                'folder_date' => $document->folder_date, 'folder_id' => $document->folder_id,
             ]], 201);
         }
         return back()->with('status', __('File uploaded to :folder.', ['folder' => $folder]));
@@ -276,6 +300,58 @@ class LocalStorageController
         return back()->with('status', __('User permissions updated.'));
     }
 
+    public function resetUserPassword(Request $request, int $id)
+    {
+        abort_unless($request->user()->hasPermission('admin'), 403);
+        $data = $request->validate(['password' => ['required', 'confirmed', Password::min(10)->letters()->numbers()]]);
+        DB::transaction(function () use ($id, $data) {
+            $person = User::whereNull('portal_deleted_at')->lockForUpdate()->findOrFail($id);
+            abort_if($person->hasPermission('admin'), 403);
+            $person->password = $data['password'];
+            $person->remember_token = null;
+            $person->portal_session_version = (int) $person->portal_session_version + 1;
+            $person->save();
+        });
+        return back()->with('status', __('Password updated. The user must sign in again.'));
+    }
+
+    private function bulkIds(Request $request): array
+    {
+        // Grid and list checkboxes represent the same visible files.
+        $data = $request->validate(['ids' => 'required|array|min:1|max:400', 'ids.*' => 'required|integer|min:1']);
+        $ids = array_values(array_unique(array_map('intval', $data['ids'])));
+        abort_if(count($ids) > 200, 422, __('Select up to 200 items at a time.'));
+        sort($ids);
+        return $ids;
+    }
+
+    public function bulkDelete(Request $request)
+    {
+        abort_unless($request->user()->hasPermission('admin'), 403);
+        $ids = $this->bulkIds($request);
+        abort_unless(StoredDocument::accessibleTo($request->user())->whereIn('id', $ids)->count() === count($ids), 409, __('Selection changed. Refresh and select the items again.'));
+        $done = 0;
+        foreach ($ids as $id) {
+            try { $this->deleteDocument($request, $id); $done++; }
+            catch (\Throwable $error) { report($error); }
+        }
+        return back()->with('status', __('Deleted :done files. :failed failed.', ['done' => $done, 'failed' => count($ids) - $done]));
+    }
+
+    public function bulkReview(Request $request)
+    {
+        abort_unless($request->user()->hasPermission('admin'), 403);
+        $ids = $this->bulkIds($request);
+        $data = $request->validate(['decision' => 'required|in:approved,rejected', 'review_note' => 'nullable|string|max:2000']);
+        abort_unless(DB::table('document_deletion_requests')->whereIn('id', $ids)->where('status', 'pending')->count() === count($ids), 409, __('Selection changed. Refresh and select the items again.'));
+        $done = 0;
+        foreach ($ids as $id) {
+            try { $this->review($request, $id); $done++; }
+            catch (\Throwable $error) { report($error); }
+        }
+        return back()->with('status', __($data['decision'] === 'approved' ? 'Approved :done requests. :failed failed.' : 'Rejected :done requests. :failed failed.', ['done' => $done, 'failed' => count($ids) - $done]));
+    }
+
     public function deleteUser(Request $request, int $id)
     {
         abort_unless($request->user()->hasPermission('admin'), 403);
@@ -324,5 +400,72 @@ class LocalStorageController
         abort_unless($this->disk()->exists($document->path), 404);
         $kind = $this->previewKind($document->mime);
         return view('local-storage.preview', compact('document', 'kind'));
+    }
+
+    private function folderSegments(string $path, bool $filePath = false): array
+    {
+        abort_if($path === '' || str_contains($path, '\\') || preg_match('/[\x00-\x1F\x7F]/u', $path), 422, __('Invalid folder path.'));
+        $segments = explode('/', $path);
+        abort_if(count($segments) > ($filePath ? 31 : 30), 422, __('Folders can be nested up to 30 levels.'));
+        foreach ($segments as $index => $segment) {
+            $max = $filePath && $index === count($segments) - 1 ? 255 : 190;
+            abort_if(trim($segment) === '' || in_array(trim($segment), ['.', '..']) || mb_strlen($segment) > $max, 422, __('Invalid folder path.'));
+        }
+        return $segments;
+    }
+
+    private function ensureFolders(User $user, int $parentId, array $segments): ?StoredFolder
+    {
+        $parent = $parentId ? StoredFolder::whereKey($parentId)->lockForUpdate()->firstOrFail() : null;
+        if ($parent) abort_unless($parent->owner_id == $user->id || $user->hasPermission('admin'), 403);
+        $depth = $parent ? count(array_filter(explode('/', $parent->tree_path))) : 0;
+        abort_if($depth + count($segments) > 30, 422, __('Folders can be nested up to 30 levels.'));
+        foreach ($segments as $name) {
+            $folder = StoredFolder::withTrashed()->lockForUpdate()->firstOrCreate(['owner_id' => $parent?->owner_id ?? $user->id,
+                'parent_id' => $parent?->id ?? 0, 'name' => $name]);
+            if ($folder->trashed()) $folder->restore();
+            if (!$folder->tree_path) { $folder->tree_path = ($parent?->tree_path ?? '/').$folder->id.'/'; $folder->save(); }
+            $parent = $folder;
+        }
+        return $parent;
+    }
+
+    public function createFolder(Request $request)
+    {
+        abort_unless($request->user()->portalCan('upload'), 403);
+        $data = $request->validate(['name' => 'required|string|max:190', 'parent_id' => 'nullable|integer|min:0']);
+        $segments = $this->folderSegments($data['name']);
+        abort_unless(count($segments) === 1, 422, __('Invalid folder path.'));
+        $folder = DB::transaction(function () use ($request, $segments) {
+            User::whereKey($request->user()->id)->lockForUpdate()->firstOrFail();
+            return $this->ensureFolders($request->user(), $request->integer('parent_id'), $segments);
+        });
+        if ($request->expectsJson()) return response()->json(['folder' => $folder], 201);
+        $destination = StoredFolder::accessibleTo($request->user())->whereKey($folder->id)->exists() ? '/files?folder='.$folder->id : '/files?tab=upload';
+        return redirect($destination)->with('status', __('Folder created.'));
+    }
+
+    public function createFolderTree(Request $request)
+    {
+        abort_unless($request->user()->portalCan('upload'), 403);
+        $data = $request->validate(['paths' => 'required|array|min:1|max:1000', 'paths.*' => 'required|string|max:2048', 'parent_id' => 'nullable|integer|min:0']);
+        $paths = array_map(fn($path) => $this->folderSegments($path), array_unique($data['paths']));
+        DB::transaction(function () use ($request, $paths) {
+            User::whereKey($request->user()->id)->lockForUpdate()->firstOrFail();
+            foreach ($paths as $segments) $this->ensureFolders($request->user(), $request->integer('parent_id'), $segments);
+        });
+        return response()->json(['message' => __('Folders created.')], 201);
+    }
+
+    public function deleteFolder(Request $request, int $id)
+    {
+        abort_unless($request->user()->portalCan('delete'), 403);
+        DB::transaction(function () use ($request, $id) {
+            $folder = StoredFolder::accessibleTo($request->user())->lockForUpdate()->findOrFail($id);
+            abort_unless($folder->owner_id == $request->user()->id || $request->user()->hasPermission('admin'), 403);
+            abort_if($folder->children()->exists() || $folder->documents()->exists(), 422, __('Only empty folders can be deleted.'));
+            $folder->delete();
+        });
+        return back()->with('status', __('Folder deleted.'));
     }
 }

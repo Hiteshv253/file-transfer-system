@@ -3,7 +3,6 @@
     const list = document.querySelector('[data-portal-tabs]');
     if (!list) return;
     const tabs = Array.from(list.querySelectorAll('[role="tab"]'));
-    const panels = Array.from(document.querySelectorAll('[data-portal-panel]'));
     function select(name, historyMode = null, focus = false) {
         const selected = tabs.find(tab => tab.dataset.tab === name) || tabs[0];
         if (!selected) return;
@@ -12,15 +11,19 @@
             tab.setAttribute('aria-selected', String(active));
             tab.tabIndex = active ? 0 : -1;
         }
-        panels.forEach(panel => { panel.hidden = panel.dataset.portalPanel !== selected.dataset.tab; });
+        document.querySelectorAll('[data-portal-panel]').forEach(panel => { panel.hidden = panel.dataset.portalPanel !== selected.dataset.tab; });
+        document.getElementById('portal-preview-outlet')?.remove();
+        document.querySelector('.portal-heading')?.removeAttribute('hidden');
+        document.getElementById('library-stats')?.removeAttribute('hidden');
         if (historyMode) {
             const url = new URL(window.location.href);
+            url.pathname = '/files';
             url.searchParams.set('tab', selected.dataset.tab);
             url.hash = '';
             window.history[historyMode](null, '', url);
         }
         if (focus) { selected.focus(); selected.scrollIntoView({block: 'nearest', inline: 'nearest'}); }
-        document.dispatchEvent(new CustomEvent('portal-tab-changed', {detail: {tab: selected.dataset.tab}}));
+        document.dispatchEvent(new CustomEvent('portal-tab-changed', {detail: {tab: selected.dataset.tab, refresh: !!historyMode}}));
     }
     tabs.forEach((tab, index) => {
         tab.addEventListener('click', event => {
@@ -38,5 +41,6 @@
         });
     });
     window.addEventListener('popstate', () => select(new URL(window.location.href).searchParams.get('tab') || 'files'));
+    document.addEventListener('portal-navigation-complete', event => select(event.detail.tab || 'files'));
     select(new URL(window.location.href).searchParams.get('tab') || list.dataset.activeTab || 'files');
 })();

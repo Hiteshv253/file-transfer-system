@@ -31,6 +31,8 @@
     @if($admin)<div class="tab-panel" id="panel-users" role="tabpanel" aria-labelledby="tab-users" data-portal-panel="users" @if($activeTab !== 'users') hidden @endif>@include('local-storage.users')</div>@endif
 </div>
 </div>
+@if($user->portalCan('upload'))<aside id="background-upload" class="background-upload" hidden aria-live="polite"><div><strong>{{ __('Uploading in background') }}</strong><small id="background-upload-summary"></small><progress id="background-upload-progress" max="100" value="0"></progress></div><button id="background-upload-open" type="button">{{ __('View progress') }}</button></aside>@endif
 <script src="/js/local-storage-tabs.js?v={{ filemtime(public_path('js/local-storage-tabs.js')) }}" defer></script>
 <script src="/js/local-storage-library.js?v={{ filemtime(public_path('js/local-storage-library.js')) }}" defer></script>
+<script src="/js/local-storage-navigation.js?v={{ filemtime(public_path('js/local-storage-navigation.js')) }}" defer></script>
 @endsection

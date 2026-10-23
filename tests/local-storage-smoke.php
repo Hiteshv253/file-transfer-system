@@ -8,6 +8,7 @@ app('view')->share('errors', new \Illuminate\Support\ViewErrorBag());
 
 use App\Http\Controllers\LocalStorageController;
 use App\Models\StoredDocument;
+use App\Models\StoredFolder;
 use App\Models\User;
 use Common\Auth\Permissions\Permission;
 use Illuminate\Http\Request;
@@ -106,6 +107,33 @@ try {
         check($response->getStatusCode() === 201 && $document->name === $name && $disk->get($document->path) === $contents
             && StoredDocument::accessibleTo($shared)->whereKey($document->id)->exists(), 'Async upload preserves bytes and sharing for '.$name);
     }
+    $controller->createFolder(asUser($owner, ['name'=>'مشاريع']));
+    $folderRoot = StoredFolder::where('owner_id',$owner->id)->where('name','مشاريع')->firstOrFail();
+    $controller->createFolder(asUser($owner, ['name'=>'مشاريع']));
+    check(StoredFolder::where('owner_id',$owner->id)->where('name','مشاريع')->count() === 1, 'Repeated folder creation does not create duplicate root folders');
+    $controller->createFolderTree(asUser($owner, ['parent_id'=>$folderRoot->id,'paths'=>['Empty/Child']]));
+    check(StoredFolder::where('owner_id',$owner->id)->where('name','Child')->exists(), 'Empty subfolder trees are preserved');
+    $folderKey = (string) Str::uuid();
+    $controller->upload(asUser($owner, ['parent_folder_id'=>$folderRoot->id,'relative_path'=>'Client A/reports/report.txt','upload_key'=>$folderKey,'share_with'=>[$shared->id]], UploadedFile::fake()->createWithContent('report.txt','Report A')));
+    $folderDocA = StoredDocument::where('upload_key',$folderKey)->firstOrFail();
+    $controller->upload(asUser($owner, ['parent_folder_id'=>$folderRoot->id,'relative_path'=>'Client A/archive/report.txt'], UploadedFile::fake()->createWithContent('report.txt','Report B')));
+    $folderDocB = StoredDocument::where('owner_id',$owner->id)->latest('id')->firstOrFail();
+    check($folderDocA->folder_id !== $folderDocB->folder_id && $disk->get($folderDocA->path)==='Report A' && $disk->get($folderDocB->path)==='Report B', 'Nested folders preserve names and never overwrite identical file names');
+    $controller->upload(asUser($owner, ['parent_folder_id'=>$folderRoot->id,'relative_path'=>'Client A/reports/report.txt','upload_key'=>$folderKey], UploadedFile::fake()->createWithContent('report.txt','Report A')));
+    check(StoredDocument::where('upload_key',$folderKey)->count() === 1, 'Nested upload retries retain a single receipt');
+    denied(fn()=>$controller->upload(asUser($owner,['parent_folder_id'=>$folderRoot->id,'relative_path'=>'Other/report.txt','upload_key'=>$folderKey],UploadedFile::fake()->createWithContent('report.txt','Report A'))),409,'A receipt cannot be reused for another folder');
+    $nested = $controller->index(asUser($owner,['folder'=>$folderDocA->folder_id]))->getData();
+    check(collect($nested['files']->items())->pluck('id')->contains($folderDocA->id) && !collect($nested['files']->items())->pluck('id')->contains($folderDocB->id), 'Folder browsing shows only files in the selected folder');
+    check($nested['breadcrumbs']->pluck('name')->all() === ['مشاريع','Client A','reports'], 'Folder breadcrumb preserves original names and hierarchy');
+    check(StoredFolder::accessibleTo($shared)->whereKey($folderRoot->id)->exists() && StoredFolder::accessibleTo($shared)->whereKey($folderDocA->folder_id)->exists(), 'Shared file recipients can navigate its ancestor folders');
+    check(!StoredFolder::accessibleTo($other)->whereKey($folderRoot->id)->exists(), 'Unrelated users cannot browse private folders');
+    denied(fn()=>$controller->createFolder(asUser($shared,['parent_id'=>$folderRoot->id,'name'=>'Forbidden'])),403,'Shared folder visibility does not grant write access');
+    denied(fn()=>$controller->upload(asUser($owner,['relative_path'=>'Project/../../outside.txt'],UploadedFile::fake()->createWithContent('outside.txt','Unsafe'))),422,'Traversal in folder uploads is rejected before writing bytes');
+    denied(fn()=>$controller->createFolder(asUser($owner,['name'=>'../outside'])),422,'Folder creation rejects traversal names');
+    denied(fn()=>$controller->deleteFolder(asUser($admin),$folderRoot->id),422,'Nonempty folders cannot be deleted accidentally');
+    $emptyChild = StoredFolder::where('owner_id',$owner->id)->where('name','Child')->firstOrFail();
+    $controller->deleteFolder(asUser($admin),$emptyChild->id);
+    check(!StoredFolder::find($emptyChild->id) && StoredFolder::withTrashed()->find($emptyChild->id), 'Deleting an empty folder retains its audit metadata');
     if ($qaDir = getenv('FILEVAULT_QA_DIR')) {
         if (!is_dir($qaDir)) mkdir($qaDir, 0700, true);
         foreach (['en-files', 'en-users', 'en-upload', 'ar-files'] as $variant) {
@@ -118,6 +146,41 @@ try {
         }
         app()->setLocale('en');
     }
+    denied(fn() => $controller->resetUserPassword(asUser($owner), $newUser->id), 403, 'Regular user cannot reset another password');
+    denied(fn() => $controller->resetUserPassword(asUser($admin, ['password' => 'ChangedPassword123', 'password_confirmation' => 'ChangedPassword123']), $admin->id), 403, 'Password editor cannot reset a super admin');
+    $controller->resetUserPassword(asUser($admin, ['password' => 'ChangedPassword123', 'password_confirmation' => 'ChangedPassword123']), $newUser->id);
+    $newUser->refresh();
+    check(\Illuminate\Support\Facades\Hash::check('ChangedPassword123', $newUser->password) && !\Illuminate\Support\Facades\Hash::check('LongPassword123', $newUser->password), 'Admin resets user password using a stored hash');
+    $oldSession = new \Illuminate\Session\Store('portal-test', new \Illuminate\Session\ArraySessionHandler(120));
+    $oldSession->start();$oldSession->put('portal_session_version', 0);
+    $oldRequest = asUser($newUser);$oldRequest->setLaravelSession($oldSession);
+    check((new \App\Http\Middleware\RequirePortalLogin())->handle($oldRequest, fn() => response('bad'))->getStatusCode() === 302, 'Password reset invalidates previous user sessions');
+    $bulkDocuments = [];
+    for ($n = 0; $n < 6; $n++) {
+        $controller->upload(asUser($owner, [], UploadedFile::fake()->createWithContent('bulk-'.$n.'.txt', 'Bulk operation fixture '.$n)));
+        $bulkDocuments[] = StoredDocument::where('owner_id', $owner->id)->latest('id')->firstOrFail();
+    }
+    denied(fn() => $controller->bulkDelete(asUser($owner, ['ids' => [$bulkDocuments[0]->id]])), 403, 'Bulk delete is restricted to super admin');
+    denied(fn() => $controller->bulkDelete(asUser($admin, ['ids' => [$bulkDocuments[0]->id, 999999999]])), 409, 'Stale bulk selection fails before deleting any file');
+    check($disk->exists($bulkDocuments[0]->path), 'Invalid bulk selection retains valid file bytes');
+    $controller->bulkDelete(asUser($admin, ['ids' => [$bulkDocuments[0]->id, $bulkDocuments[0]->id, $bulkDocuments[1]->id]]));
+    check(!$disk->exists($bulkDocuments[0]->path) && !$disk->exists($bulkDocuments[1]->path), 'Bulk delete deduplicates grid/list selection and deletes selected files');
+    $reviewIds = [];
+    foreach ([$bulkDocuments[2], $bulkDocuments[3]] as $bulkDocument) {
+        $controller->requestDeletion(asUser($owner, ['reason' => 'Bulk test']), $bulkDocument->id);
+        $reviewIds[] = DB::table('document_deletion_requests')->where('document_id', $bulkDocument->id)->where('status', 'pending')->value('id');
+    }
+    denied(fn() => $controller->bulkReview(asUser($owner, ['ids' => $reviewIds, 'decision' => 'approved'])), 403, 'Regular user cannot bulk approve requests');
+    $controller->bulkReview(asUser($admin, ['ids' => $reviewIds, 'decision' => 'rejected', 'review_note' => 'Keep files']));
+    check(DB::table('document_deletion_requests')->whereIn('id', $reviewIds)->where('status', 'rejected')->count() === 2 && $disk->exists($bulkDocuments[2]->path), 'Bulk rejection retains file bytes and records decisions');
+    denied(fn() => $controller->bulkReview(asUser($admin, ['ids' => $reviewIds, 'decision' => 'approved'])), 409, 'Reviewed requests cannot be bulk processed again');
+    $reviewIds = [];
+    foreach ([$bulkDocuments[2], $bulkDocuments[3]] as $bulkDocument) {
+        $controller->requestDeletion(asUser($owner, ['reason' => 'Approved bulk test']), $bulkDocument->id);
+        $reviewIds[] = DB::table('document_deletion_requests')->where('document_id', $bulkDocument->id)->where('status', 'pending')->value('id');
+    }
+    $controller->bulkReview(asUser($admin, ['ids' => $reviewIds, 'decision' => 'approved']));
+    check(DB::table('document_deletion_requests')->whereIn('id', $reviewIds)->where('status', 'approved')->where('reviewed_by', $admin->id)->count() === 2 && !$disk->exists($bulkDocuments[2]->path) && !$disk->exists($bulkDocuments[3]->path), 'Bulk approval deletes selected files and records the admin');
     // File visibility and actions must be enforced by the server, including direct URLs.
     $active = StoredDocument::where('owner_id', $owner->id)->firstOrFail();
     $controller->updateUser(asUser($admin, ['permissions' => ['view_own']]), $owner->id);
@@ -163,6 +226,8 @@ try {
     $reviewRequest = Request::create('/files/requests/1/review', 'POST');
     check($gate->handle($reviewRequest, fn() => throw new RuntimeException('Deletion bypassed backup lock'))->getStatusCode() === 503, 'Deletion reviews cannot alter files during a backup');
     check($gate->handle(Request::create('/files/1/delete', 'POST'), fn() => throw new RuntimeException('Direct deletion bypassed backup lock'))->getStatusCode() === 503, 'Direct deletion respects the consistent backup lock');
+    check($gate->handle(Request::create('/files/bulk-delete', 'POST'), fn() => throw new RuntimeException('Bulk deletion bypassed backup lock'))->getStatusCode() === 503, 'Bulk deletion respects the backup lock');
+    check($gate->handle(Request::create('/files/requests/bulk-review', 'POST'), fn() => throw new RuntimeException('Bulk review bypassed backup lock'))->getStatusCode() === 503, 'Bulk review respects the backup lock');
     flock($lock, LOCK_UN); fclose($lock);
     check($gate->handle($uploadRequest, fn() => response('ok'))->getStatusCode() === 200, 'Uploads resume when the backup releases its lock');
     echo "All local storage smoke checks passed.\n";
