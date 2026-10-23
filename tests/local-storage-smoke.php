@@ -84,6 +84,19 @@ try {
     check(str_contains($page, 'Deletion approvals') && str_contains($page, 'Create a user'), 'Admin dashboard renders approvals and user management');
     $page = $controller->index(asUser($owner))->render();
     check(!str_contains($page, 'Create a user account') && !str_contains($page, 'Approve deletion'), 'Regular dashboard hides admin controls');
+    $localeGate = new \App\Http\Middleware\PortalLocale();
+    $arabicRequest = Request::create('/files', 'GET', [], ['portal_locale' => 'ar']);
+    $localeGate->handle($arabicRequest, fn() => response('ok'));
+    $page = $controller->index(asUser($admin))->render();
+    check(str_contains($page, 'lang="ar" dir="rtl"') && str_contains($page, 'مكتبة ملفات الفريق')
+        && str_contains($page, 'إنشاء حساب مستخدم') && str_contains($page, 'data-portal-panel="files"'), 'Arabic admin dashboard renders RTL without translating machine identifiers');
+    $page = $controller->index(asUser($owner))->render();
+    check(str_contains($page, 'مكتبة ملفاتك') && !str_contains($page, 'إنشاء حساب مستخدم'), 'Arabic regular dashboard preserves account permissions');
+    Auth::logout();
+    $page = $controller->loginPage()->render();
+    check(str_contains($page, 'مرحبًا بك في خزنة الملفات') && str_contains($page, '/files/language'), 'Arabic login offers both languages before authentication');
+    $localeGate->handle(Request::create('/files', 'GET', [], ['portal_locale' => 'invalid']), fn() => response('ok'));
+    check(app()->getLocale() === 'en', 'Unsupported language falls back to English');
     foreach (['photo.png' => "\x89PNG\r\n\x1a\n", 'sound.mp3' => 'ID3 audio test', 'video.mp4' => "\x00\x00\x00\x18ftypmp42", 'notes.txt' => 'Example text'] as $name => $contents) {
         $request = asUser($owner, ['share_with' => [$shared->id]], UploadedFile::fake()->createWithContent($name, $contents));
         $request->headers->set('Accept', 'application/json');
@@ -93,6 +106,53 @@ try {
         check($response->getStatusCode() === 201 && $document->name === $name && $disk->get($document->path) === $contents
             && StoredDocument::accessibleTo($shared)->whereKey($document->id)->exists(), 'Async upload preserves bytes and sharing for '.$name);
     }
+    if ($qaDir = getenv('FILEVAULT_QA_DIR')) {
+        if (!is_dir($qaDir)) mkdir($qaDir, 0700, true);
+        foreach (['en-files', 'en-users', 'en-upload', 'ar-files'] as $variant) {
+            [$locale, $tab] = explode('-', $variant);
+            app()->setLocale($locale);
+            $html = $controller->index(asUser($admin, ['tab' => $tab]))->render();
+            $html = preg_replace_callback('~<link rel="stylesheet" href="/css/([^"?]+)[^"]*">~', fn($match) => '<style>'.file_get_contents(public_path('css/'.$match[1])).'</style>', $html);
+            $html = preg_replace_callback('~<script src="/js/([^"?]+)[^"]*" defer></script>~', fn($match) => '<script>'.file_get_contents(public_path('js/'.$match[1])).'</script>', $html);
+            file_put_contents($qaDir.'/'.$variant.'.html', $html);
+        }
+        app()->setLocale('en');
+    }
+    // File visibility and actions must be enforced by the server, including direct URLs.
+    $active = StoredDocument::where('owner_id', $owner->id)->firstOrFail();
+    $controller->updateUser(asUser($admin, ['permissions' => ['view_own']]), $owner->id);
+    $owner->refresh();
+    check(StoredDocument::accessibleTo($owner)->whereKey($active->id)->exists(), 'View-own permission retains owned documents');
+    denied(fn() => $controller->download(asUser($owner), $active->id), 403, 'Download permission cannot be bypassed by a direct URL');
+    denied(fn() => $controller->preview(asUser($owner), $active->id), 403, 'Preview requires its own permission');
+    denied(fn() => $controller->upload(asUser($owner), ), 403, 'Upload permission is enforced before accepting bytes');
+    denied(fn() => $controller->deleteDocument(asUser($owner), $active->id), 403, 'Direct deletion requires explicit permission');
+    $page = $controller->index(asUser($owner))->render();
+    check(!str_contains($page, 'id="upload-form"') && !str_contains($page, 'href="/files/'.$active->id.'/download"'), 'Revoked controls disappear from the dashboard');
+    $controller->updateUser(asUser($admin, ['permissions' => []]), $shared->id);
+    $shared->refresh();
+    check(StoredDocument::accessibleTo($shared)->count() === 0, 'Empty permissions hide shared files too');
+    $controller->updateUser(asUser($admin, ['permissions' => ['view_all', 'preview']]), $shared->id);
+    $shared->refresh();
+    check(StoredDocument::accessibleTo($shared)->whereKey($active->id)->exists(), 'View-all permission deliberately expands visibility');
+    check(str_contains($controller->preview(asUser($shared), $active->id)->render(), 'File preview'), 'Authorized preview page renders');
+    denied(fn() => $controller->download(asUser($other, ['preview' => 1]), $active->id), 404, 'Preview stream cannot expose an inaccessible document');
+    $controller->updateUser(asUser($admin, ['permissions' => ['view_own', 'delete']]), $owner->id);
+    $owner->refresh();
+    $controller->deleteDocument(asUser($owner), $active->id);
+    check(!StoredDocument::find($active->id) && !$disk->exists($active->path), 'Granted direct deletion removes accessible file without an approval step');
+    check(DB::table('document_deletion_requests')->where('document_id', $active->id)->where('reviewed_by', $owner->id)->where('status', 'approved')->exists(), 'Direct deletion records the actor in audit history');
+    $another = StoredDocument::where('owner_id', $owner->id)->firstOrFail();
+    $controller->deleteDocument(asUser($admin), $another->id);
+    check(!$disk->exists($another->path), 'Super admin can directly delete team files');
+    denied(fn() => $controller->deleteUser(asUser($owner), $other->id), 403, 'Regular user cannot remove accounts');
+    denied(fn() => $controller->deleteUser(asUser($admin), $admin->id), 403, 'Super admin account cannot be removed through user management');
+    denied(fn() => $controller->updateUser(asUser($admin, ['permissions' => []]), $admin->id), 403, 'User permissions editor cannot change a super admin');
+    $controller->deleteUser(asUser($admin), $owner->id);
+    $owner->refresh();
+    check($owner->portal_deleted_at && StoredDocument::where('owner_id', $owner->id)->exists(), 'Removing user retains owned files for super admin');
+    denied(fn() => (new \App\Http\Middleware\RequirePortalLogin())->handle(asUser($owner), fn() => response('bad')), 403, 'Removing user revokes an existing session immediately');
+    denied(fn() => $controller->download(asUser($owner), $another->id), 403, 'Removed user cannot access files');
     config(['local-storage.lock_writes' => true]);
     $lock = fopen(config('local-storage.lock_path'), 'c+');
     flock($lock, LOCK_EX);
@@ -102,6 +162,7 @@ try {
     check($response->getStatusCode() === 503, 'Consistent backup blocks concurrent uploads without writing or deleting files');
     $reviewRequest = Request::create('/files/requests/1/review', 'POST');
     check($gate->handle($reviewRequest, fn() => throw new RuntimeException('Deletion bypassed backup lock'))->getStatusCode() === 503, 'Deletion reviews cannot alter files during a backup');
+    check($gate->handle(Request::create('/files/1/delete', 'POST'), fn() => throw new RuntimeException('Direct deletion bypassed backup lock'))->getStatusCode() === 503, 'Direct deletion respects the consistent backup lock');
     flock($lock, LOCK_UN); fclose($lock);
     check($gate->handle($uploadRequest, fn() => response('ok'))->getStatusCode() === 200, 'Uploads resume when the backup releases its lock');
     echo "All local storage smoke checks passed.\n";

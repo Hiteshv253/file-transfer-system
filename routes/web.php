@@ -8,6 +8,12 @@ use Common\Core\Controllers\HomeController;
 use Common\Pages\CustomPageController;
 use Illuminate\Support\Facades\Route;
 
+Route::middleware(\App\Http\Middleware\PortalLocale::class)->group(function () {
+Route::post('files/language', function (\Illuminate\Http\Request $request) {
+    $data = $request->validate(['locale' => 'required|in:en,ar']);
+    return redirect(auth()->check() ? '/files' : '/files/login')
+        ->withCookie(cookie('portal_locale', $data['locale'], 525600, '/', null, $request->isSecure(), true, false, 'lax'));
+});
 Route::get('files/login', [\App\Http\Controllers\LocalStorageController::class, 'loginPage']);
 Route::get('files/health', function () {
     \Illuminate\Support\Facades\DB::select('SELECT 1');
@@ -23,9 +29,15 @@ Route::group(['prefix' => 'files', 'middleware' => [\App\Http\Middleware\Require
     Route::post('upload-status', [$controller, 'uploadStatus']);
     Route::get('inventory', [$controller, 'inventory']);
     Route::get('{id}/download', [$controller, 'download'])->whereNumber('id');
+    Route::get('{id}/preview', [$controller, 'preview'])->whereNumber('id');
+    Route::post('{id}/delete', [$controller, 'deleteDocument'])->whereNumber('id');
     Route::post('{id}/request-deletion', [$controller, 'requestDeletion'])->whereNumber('id');
     Route::post('requests/{id}/review', [$controller, 'review'])->whereNumber('id');
     Route::post('users', [$controller, 'createUser']);
+    Route::post('users/{id}/permissions', [$controller, 'updateUser'])->whereNumber('id');
+    Route::post('users/{id}/delete', [$controller, 'deleteUser'])->whereNumber('id');
+});
+
 });
 
 Route::get('test', function () {

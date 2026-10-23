@@ -14,6 +14,30 @@ class User extends BaseUser
 
     protected bool $gravatarEnabled = false;
 
+    public const PORTAL_PERMISSIONS = [
+        'view_own' => 'View own files',
+        'view_shared' => 'View shared files',
+        'view_all' => 'View all team files',
+        'upload' => 'Upload files',
+        'preview' => 'Preview files',
+        'download' => 'Download files',
+        'request_delete' => 'Request file deletion',
+        'delete' => 'Delete accessible files directly',
+    ];
+
+    public const PORTAL_DEFAULTS = ['view_own', 'view_shared', 'upload', 'preview', 'download', 'request_delete'];
+
+    public function portalPermissions(): array
+    {
+        return $this->portal_permissions === null ? self::PORTAL_DEFAULTS : (json_decode($this->portal_permissions, true) ?: []);
+    }
+
+    public function portalCan(string $permission): bool
+    {
+        if ($this->portal_deleted_at || $this->banned_at) return false;
+        return $this->hasPermission('admin') || in_array($permission, $this->portalPermissions(), true);
+    }
+
     public function workspaces(): HasMany
     {
         return $this->hasMany(Workspace::class, 'owner_id');

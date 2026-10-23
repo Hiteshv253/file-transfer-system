@@ -12,7 +12,7 @@ class RequirePortalLogin
         if (!$request->user()) {
             return redirect('/files/login');
         }
-        abort_if($request->user()->banned_at, 403, 'This account is disabled.');
+        abort_if($request->user()->banned_at || $request->user()->portal_deleted_at, 403, __('This account is disabled.'));
         return $next($request);
     }
 }

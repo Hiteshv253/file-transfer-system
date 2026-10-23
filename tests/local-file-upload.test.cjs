@@ -32,6 +32,7 @@ function setup(options = {}) {
     document.getElementById = get;
     document.createElement = () => new Element();
     const window = new Element();
+    window.portalTranslations = options.translations || {};
     const saved = new Map(options.saved ? [['file-vault-upload-batch-undefined', JSON.stringify(options.saved)]] : []);
     window.localStorage = {getItem: key => saved.get(key), setItem: (key, value) => saved.set(key, value)};
     window.confirm = () => true;
@@ -45,6 +46,25 @@ function setup(options = {}) {
 }
 const file = (name, size = 1024) => ({name, size, lastModified: 123});
 const flush = () => new Promise(resolve => setImmediate(resolve));
+
+test('Arabic labels preserve upload states and receipts when changing languages', async () => {
+    const translations = JSON.parse(fs.readFileSync('resources/lang/ar.json', 'utf8'));
+    const {get, requests, saved} = setup({translations});
+    get('file').files = [file('report.pdf')];
+    await get('file').emit('change');
+    assert.equal(get('upload-submit').textContent, translations['Upload files']);
+    const finished = get('upload-form').emit('submit');
+    await requests[0].finish(422, {message: 'Rejected'});
+    await finished;
+    const batch = JSON.parse(saved.values().next().value);
+    assert.equal(batch[0].state, 'failed', 'Persist machine states independently of locale');
+    assert.equal(get('upload-submit').textContent, translations['Upload remaining / retry failed']);
+    const retry = get('upload-form').emit('submit');
+    await requests[1].finish(201, {document: {id: 99, folder_date: '2026-10-23'}});
+    await retry;
+    assert.ok(get('upload-feedback').textContent.includes('تم رفع 1 ملف.'));
+    assert.equal(JSON.parse(saved.values().next().value)[0].state, 'done');
+});
 
 test('mixed file queue, bounded concurrency, progress, errors and selective retry', async () => {
     const {get, requests} = setup();
