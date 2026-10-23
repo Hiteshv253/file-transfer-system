@@ -1,0 +1,2 @@
+import{a0 as u,aT as c,aS as r,bH as i,r as f}from"./main-D477kfWx.js";function m(){var a,n,o,s;const e=(n=(a=u())==null?void 0:a.settings.dates)==null?void 0:n.default_timezone,t=((s=(o=u())==null?void 0:o.user)==null?void 0:s.timezone)||e||"auto";return t==="auto"?c():t}function z(){const e=i();return f.useMemo(()=>{try{return r(e)}catch{return r("UTC")}},[e])}function d(){const e=m();try{return r(e)}catch{return r("UTC")}}export{d as g,z as u};
+//# sourceMappingURL=use-current-date-time-Ch-4anX9.js.map

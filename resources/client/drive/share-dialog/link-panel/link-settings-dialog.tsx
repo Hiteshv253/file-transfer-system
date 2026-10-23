@@ -1,0 +1,225 @@
+import type {ShareDialogActivePanel} from '@app/drive/share-dialog/share-dialog';
+import {useEntryShareableLink} from '@app/drive/shareable-link/queries/use-entry-shareable-link';
+import {
+  UpdateShareableLinkPayload,
+  useUpdateShareableLink,
+} from '@app/drive/shareable-link/queries/use-update-shareable-link';
+import {FileEntry} from '@common/uploads/file-entry';
+import {getLocalTimeZone, now} from '@internationalized/date';
+import {Button} from '@ui/buttons/button';
+import {Form} from '@ui/forms/form';
+import {FormDatePicker} from '@ui/forms/input-field/date/date-picker/date-picker';
+import {FormTextField} from '@ui/forms/input-field/text-field/text-field';
+import {FormSwitch, Switch} from '@ui/forms/toggle/switch';
+import {message} from '@ui/i18n/message';
+import {Trans} from '@ui/i18n/trans';
+import {useTrans} from '@ui/i18n/use-trans';
+import {ArrowBackIcon} from '@ui/icons/material/ArrowBack';
+import {DialogBody} from '@ui/overlays/dialog/dialog-body';
+import {useDialogContext} from '@ui/overlays/dialog/dialog-context';
+import {DialogFooter} from '@ui/overlays/dialog/dialog-footer';
+import {DialogHeader} from '@ui/overlays/dialog/dialog-header';
+import {useSettings} from '@ui/settings/use-settings';
+import {toast} from '@ui/toast/toast';
+import clsx from 'clsx';
+import {m} from 'framer-motion';
+import {Fragment, ReactElement, useState} from 'react';
+import {useForm} from 'react-hook-form';
+
+interface LinkSettingsDialogProps {
+  className?: string;
+  setActivePanel: (name: ShareDialogActivePanel) => void;
+  entry: FileEntry;
+}
+export function LinkSettingsDialog({
+  className,
+  setActivePanel,
+  entry,
+}: LinkSettingsDialogProps) {
+  const {drive} = useSettings();
+  const enableDirectLinks = drive?.direct_links ?? false;
+  const {formId} = useDialogContext();
+  const {data} = useEntryShareableLink(entry.id);
+  const link = data?.link;
+  const form = useForm<UpdateShareableLinkPayload>({
+    defaultValues: {
+      allowDownload: link?.allow_download,
+      allowEdit: link?.allow_edit,
+      allowDirect: link?.allow_direct,
+      expiresAt: link?.expires_at,
+      entryId: entry.id,
+    },
+  });
+  const updateLink = useUpdateShareableLink(form);
+
+  return (
+    <Fragment>
+      <DialogHeader
+        onDismiss={() => {
+          setActivePanel('main');
+        }}
+      >
+        <Trans message="Shareable Link Settings" />
+      </DialogHeader>
+      <DialogBody>
+        <m.div
+          key="link-settings-content"
+          className="min-h-[335px]"
+          animate={{opacity: 1, y: 0}}
+          initial={{opacity: 0, y: 20}}
+          exit={{opacity: 0, y: -20}}
+          transition={{duration: 0.1}}
+        >
+          <Form
+            id={formId}
+            className={className}
+            form={form}
+            onSubmit={value => {
+              updateLink.mutate(value, {
+                onSuccess: () => {
+                  setActivePanel('main');
+                  toast(message('Link settings saved'));
+                },
+              });
+            }}
+          >
+            <LinkExpirationOption showField={!!link?.expires_at} />
+            <LinkPasswordOption showField={!!link?.password} />
+            <LinkOption>
+              <Trans message="Allow download" />
+              <FormSwitch name="allowDownload">
+                <Trans message="Users with link can download this item" />
+              </FormSwitch>
+            </LinkOption>
+            <LinkOption showBorder={enableDirectLinks}>
+              <Trans message="Allow import" />
+              <FormSwitch name="allowEdit">
+                <Trans message="Users with link can import this item into their own drive" />
+              </FormSwitch>
+            </LinkOption>
+            {enableDirectLinks && (
+              <LinkOption showBorder={false}>
+                <Trans message="Allow direct access" />
+                <FormSwitch name="allowDirect">
+                  <Trans message="Allow accessing contents of the file directly using this link" />
+                </FormSwitch>
+              </LinkOption>
+            )}
+          </Form>
+        </m.div>
+      </DialogBody>
+      <DialogFooter>
+        <Button
+          type="button"
+          startIcon={<ArrowBackIcon />}
+          onClick={() => {
+            setActivePanel('main');
+          }}
+        >
+          <Trans message="Back" />
+        </Button>
+        <Button
+          type="submit"
+          form={formId}
+          variant="flat"
+          color="primary"
+          disabled={updateLink.isPending}
+        >
+          <Trans message="Save" />
+        </Button>
+      </DialogFooter>
+    </Fragment>
+  );
+}
+
+const minDate = now(getLocalTimeZone());
+
+interface LinkExpirationOptionProps {
+  showField: boolean;
+}
+function LinkExpirationOption({
+  showField: showFieldDefault,
+}: LinkExpirationOptionProps) {
+  const {trans} = useTrans();
+  const [showField, setShowField] = useState(showFieldDefault);
+  return (
+    <LinkOption>
+      <Trans message="Link expiration" />
+      <div>
+        <Switch
+          checked={showField}
+          onChange={e => {
+            setShowField(e.target.checked);
+          }}
+        >
+          <Trans message="Link is valid until" />
+        </Switch>
+        {showField && (
+          <FormDatePicker
+            min={minDate}
+            name="expiresAt"
+            granularity="minute"
+            className="mt-20"
+            aria-label={trans({
+              message: 'Link expiration date and time',
+            })}
+          />
+        )}
+      </div>
+    </LinkOption>
+  );
+}
+
+interface LinkPasswordOptionProps {
+  showField: boolean;
+}
+function LinkPasswordOption({
+  showField: showFieldDefault,
+}: LinkPasswordOptionProps) {
+  const {trans} = useTrans();
+  const [showField, setShowField] = useState(showFieldDefault);
+  return (
+    <LinkOption>
+      <Trans message="Password protect" />
+      <div>
+        <Switch
+          checked={showField}
+          onChange={e => {
+            setShowField(e.target.checked);
+          }}
+        >
+          <Trans message="Users will need to enter password in order to view this link" />
+        </Switch>
+        {showField && (
+          <FormTextField
+            type="password"
+            autoFocus
+            name="password"
+            className="mt-20"
+            aria-label={trans({message: 'Link password'})}
+            description={
+              <Trans message="Password will not be requested when viewing the link as file owner." />
+            }
+            placeholder={trans({
+              message: 'Enter new password...',
+            })}
+          />
+        )}
+      </div>
+    </LinkOption>
+  );
+}
+
+interface LinkOptionProps {
+  children: [ReactElement, ReactElement];
+  showBorder?: boolean;
+}
+function LinkOption({children, showBorder = true}: LinkOptionProps) {
+  const [title, content] = children;
+  return (
+    <div className={clsx(showBorder && 'mb-20 border-b pb-20')}>
+      <div className="mb-8 text-sm font-medium">{title}</div>
+      {content}
+    </div>
+  );
+}

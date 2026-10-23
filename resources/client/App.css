@@ -1,0 +1,6 @@
+@import '../../common/foundation/resources/client/core/common.css';
+@import 'drive/file-view/file-grid/file-grid.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;

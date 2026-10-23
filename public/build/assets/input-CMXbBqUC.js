@@ -1,0 +1,2 @@
+import{aw as u,j as r,c as f,b3 as l}from"./main-D477kfWx.js";const m=u.forwardRef((s,i)=>{const{children:e,inputProps:o,wrapperProps:t,className:n,autoFocus:a,style:c,onClick:p}=s;return r.jsx("div",{...t,onClick:p,children:r.jsx("div",{...o,role:"group",className:f(n,"flex items-center focus-within:border-primary/90 focus-within:ring-1 focus-within:ring-inset focus-within:ring-primary/90"),ref:i,style:c,children:r.jsx(l,{autoFocus:a,children:e})})})});export{m as I};
+//# sourceMappingURL=input-CMXbBqUC.js.map
